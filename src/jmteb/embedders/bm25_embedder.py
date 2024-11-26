@@ -106,7 +106,13 @@ class BM25Embedder(TextEmbedder):
     ) -> None:
         self.model_kwargs = model_kwargs or {}
         
-        def tokenize(x, show_progress_bar: bool = False, timeout: int = 3600):
+        def tokenize(x, show_progress_bar: bool = False):
+            if show_progress_bar:
+                x = tqdm.tqdm(x, desc="Tokenizing")
+            return [tinysegmenter.tokenize(text) for text in x]
+        
+        # 並列処理を試みているがうまくいっていない
+        def _tokenize(x, show_progress_bar: bool = False, timeout: int = 3600):
             
             with concurrent.futures.ProcessPoolExecutor() as executor:
                 # futures のリストを作成
