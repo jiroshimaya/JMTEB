@@ -85,3 +85,14 @@ torchrun \
 ```
 
 Note that the batch size here is global batch size (`per_device_batch_size` × `n_gpu`).
+
+## BM25による評価
+このフォークリポジトリではJMTEBのRetrievalタスクをBM25で評価することができます。
+
+```bash
+poetry run python -m jmteb \
+  --evaluators "src/configs/tasks/jsts.jsonnet" \
+  --embedder BM25Embedder \
+  --embedder.use_count_vector_for_query true \ # queryを単語カウントベクトルにするときはtrue、重みベクトルにするときはfalse
+  --evaluators src/jmteb/configs/tasks/jagovfaqs_22k.jsonnet
+```

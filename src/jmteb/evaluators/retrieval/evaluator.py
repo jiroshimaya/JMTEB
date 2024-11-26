@@ -12,6 +12,8 @@ import tqdm
 from loguru import logger
 from torch import Tensor
 from scipy.sparse.csr import csr_matrix
+from sklearn.metrics.pairwise import cosine_similarity as cosine_similarity_sklearn
+
 from torch import distributed as dist
 
 from jmteb.embedders.base import TextEmbedder
@@ -165,10 +167,9 @@ class RetrievalEvaluator(EmbeddingEvaluator):
     ) -> tuple[dict[str, dict[str, float]], list[RetrievalPrediction]]:
         results: dict[str, float] = {}
         predictions: list[RetrievalPrediction] = [] if self.log_predictions else None
-        is_csr_matrix = isinstance(doc_embeddings, csr_matrix) # type: ignore
+        is_csr_matrix = isinstance(doc_embeddings, csr_matrix) and isinstance(query_embeddings, csr_matrix) 
         if is_csr_matrix:	
             doc_len = doc_embeddings.shape[0]	
-            query_embeddings = query_embeddings.toarray() # type: ignore	
         else:	
             doc_len = len(doc_embeddings)
         with tqdm.tqdm(total=doc_len, desc="Retrieval doc chunks") as pbar:
@@ -185,13 +186,10 @@ class RetrievalEvaluator(EmbeddingEvaluator):
                 else:
                     device = "cpu"
                 
-                query_embeddings = to_tensor(query_embeddings, device=device)
                 if is_csr_matrix:
-                    doc_embeddings_chunk = to_sparse_tensor(
-                        doc_embeddings_chunk,
-                        device=device,
-                    )
+                    pass
                 else:
+                    query_embeddings = to_tensor(query_embeddings, device=device)
                     doc_embeddings_chunk = to_tensor(doc_embeddings_chunk, device=device)
                 similarity = dist_func(query_embeddings, doc_embeddings_chunk)
 
@@ -204,8 +202,11 @@ class RetrievalEvaluator(EmbeddingEvaluator):
 
                 top_k_indices_chunks.append(top_k_indices + offset)
                 top_k_scores_chunks.append(top_k_scores)
-
-                pbar.update(len(doc_embeddings_chunk))
+                if is_csr_matrix:
+                    doc_embeddings_chunk_len = doc_embeddings_chunk.shape[0]
+                else:
+                    doc_embeddings_chunk_len = len(doc_embeddings_chunk)
+                pbar.update(doc_embeddings_chunk_len)
 
         top_k_indices = torch.cat(top_k_indices_chunks, axis=1)
         top_k_scores = torch.cat(top_k_scores_chunks, axis=1)
@@ -335,10 +336,12 @@ def to_sparse_tensor(embeddings: csr_matrix | Tensor, device: str) -> Tensor:
 @dataclass
 class Similarities:
     @staticmethod
-    def cosine_similarity(e1: Tensor, e2: Tensor) -> Tensor:
+    def cosine_similarity(e1: Tensor | csr_matrix, e2: Tensor | csr_matrix) -> Tensor:
         """
         コサイン類似度を計算します。e2 がスパーステンソルの場合に対応しています。
         """
+        if isinstance(e1, csr_matrix) and isinstance(e2, csr_matrix):
+            return torch.tensor(cosine_similarity_sklearn(e1, e2), dtype=torch.float32)
         e1_norm = torch.nn.functional.normalize(e1, p=2, dim=1)
 
         if e2.is_sparse:
@@ -389,10 +392,12 @@ class Similarities:
         return 100 / (euclidean_dist + 1e-4)
 
     @staticmethod
-    def dot_score(e1: Tensor, e2: Tensor) -> Tensor:
+    def dot_score(e1: Tensor | csr_matrix, e2: Tensor | csr_matrix) -> Tensor:
         """
         ドット積を計算します。e2 がスパーステンソルの場合に対応しています。
         """
+        if isinstance(e1, csr_matrix) and isinstance(e2, csr_matrix):
+            return torch.tensor(e1.dot(e2.T).toarray())
         if e2.is_sparse:
             # スパーステンソルをコアリッシュ
             e2 = e2.coalesce()
