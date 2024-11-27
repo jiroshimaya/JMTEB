@@ -3,7 +3,7 @@ from __future__ import annotations
 from os import PathLike
 from pathlib import Path
 from collections import Counter
-import concurrent.futures
+import math
 
 import numpy as np
 import torch
@@ -11,72 +11,135 @@ import tqdm
 from loguru import logger
 from scipy.sparse import load_npz, save_npz, vstack
 from scipy.sparse.csr import csr_matrix
-from rank_bm25 import BM25Okapi
 import tinysegmenter
+from typing import Callable
 
 
 from jmteb.embedders.base import TextEmbedder
 
-class BM25Vectorizer(BM25Okapi):
-    def __init__(self, corpus: list[list[str]], **bm25_params):            
-        super().__init__(corpus, **bm25_params, tokenizer=None) # tokenizeは使わない
+def tokenize_with_tinysegmenter(text: str) -> list[str]:
+    return tinysegmenter.tokenize(text)
+
+def tokenize_with_ngrams(text: str, ngram_range: tuple[int, int] = (3, 3)) -> list[str]:
+    """
+    指定された範囲のn-gramを生成する関数
+
+    :param text: 入力テキスト
+    :param ngram_range: n-gramの範囲 (start, end)
+    :return: n-gramのリスト
+    """
+    ngrams = []
+    for i in range(ngram_range[0], ngram_range[1] + 1):
+        ngrams.extend([''.join(text[j:j+i]) for j in range(len(text)-i+1)])
+    return ngrams
+
+
+class BM25Vectorizer:
+    # rank-bm25 の実装を参考にした
+    def __init__(self, k1=1.5, b=0.75, epsilon=0.25, tokenizer: Callable[[list[str]], list[list[str]]] | None = None):
+        self.k1 = k1
+        self.b = b
+        self.epsilon = epsilon
+        self.tokenizer = tokenizer
+    
+    def _tokenize_corpus(self, corpus: list[str]) -> list[list[str]]:
+        return [tokenize_with_ngrams(text) for text in corpus]
+            
+    def fit(self, corpus: list[list[str]] | list[str],
+            initialize: bool = True,
+            batch_size: int = 10**4,
+            show_progress_bar: bool = False):
+        if initialize:
+            self.corpus_size = 0
+            self.doc_len = 0
+            self.avgdl = 0
+            self.idf = {}
+            self.nd: Counter[str] = Counter()
+        
+        with tqdm.tqdm(total=len(corpus), desc="Fitting BM25") as pbar:
+            for i in range(0, len(corpus), batch_size):
+                batch = corpus[i : i + batch_size]
+                if self.tokenizer is not None:
+                    batch = self._tokenize_corpus(batch)
+                self._calc_nd(batch)
+                pbar.update(len(batch))
+        
+        self._calc_idf(self.nd)        
+
         self.vocabulary = list(self.idf.keys())
         self.word_to_id = {word: i for i, word in enumerate(self.vocabulary)}
         self.idf_array = np.array([self.idf[word] for word in self.vocabulary])  # idfをNumPy配列として保持
 
-    #override
-    def _initialize(self, corpus: list[list[str]]):
-        nd = {}  # word -> number of documents with word
-        num_doc = 0
-        for document in tqdm.tqdm(corpus, desc="Initializing BM25"):
-            self.doc_len.append(len(document))
-            num_doc += len(document)
-
-            frequencies = {}
-            for word in document:
-                if word not in frequencies:
-                    frequencies[word] = 0
-                frequencies[word] += 1
-            self.doc_freqs.append(frequencies)
-
-            for word, freq in frequencies.items():
-                try:
-                    nd[word]+=1
-                except KeyError:
-                    nd[word] = 1
-
-            self.corpus_size += 1
-
-        self.avgdl = num_doc / self.corpus_size
-        self.nd = nd # add this line
-        return nd
-    def transform(self, queries: list[list[str]], show_progress_bar: bool = False) -> csr_matrix:
-        # クエリを頻度ベクトルに変換
-        query_matrix = self.count_transform(queries, show_progress_bar=show_progress_bar)
-
-        # 各クエリの長さを計算
-        query_lengths = np.array(query_matrix.sum(axis=1)).flatten()
-
-        # BM25スコアの計算
-        tf = query_matrix
-        idf = self.idf_array
-
-        # スパース行列の要素ごとの演算
-        numerator = tf.multiply(idf * (self.k1 + 1))
-        denominator = tf + self.k1 * (1 - self.b + self.b * query_lengths[:, None] / self.avgdl)
-
-        scores = numerator.multiply(1 / denominator)
+    def _calc_nd(self, corpus: list[list[str]]):
+        for document in corpus:
+            self.nd.update(set(document))
         
-        scores = csr_matrix(scores)
+        self.doc_len += sum(len(document) for document in corpus)
+        self.corpus_size += len(corpus)
+        self.avgdl = self.doc_len / self.corpus_size
 
-        return scores
-            
-    def count_transform(self, queries: list[list[str]], show_progress_bar: bool = False) -> csr_matrix:
+    def _calc_idf(self, nd):
+        """
+        Calculates frequencies of terms in documents and in corpus.
+        This algorithm sets a floor on the idf values to eps * average_idf
+        """
+        # collect idf sum to calculate an average idf for epsilon value
+        idf_sum = 0
+        # collect words with negative idf to set them a special epsilon value.
+        # idf can be negative if word is contained in more than half of documents
+        negative_idfs = []
+        for word, freq in nd.items():
+            idf = math.log(self.corpus_size - freq + 0.5) - math.log(freq + 0.5)
+            self.idf[word] = idf
+            idf_sum += idf
+            if idf < 0:
+                negative_idfs.append(word)
+        self.average_idf = idf_sum / len(self.idf)
+
+        eps = self.epsilon * self.average_idf
+        for word in negative_idfs:
+            self.idf[word] = eps
+
+    def transform(self, queries: list[list[str]] | list[str], show_progress_bar: bool = False) -> csr_matrix:
         
         rows = []
         cols = []
         data = []
         
+        if self.tokenizer is not None:
+            queries = self._tokenize_corpus(queries)
+        enumerate_queries = tqdm.tqdm(enumerate(queries)) if show_progress_bar else enumerate(queries)
+        
+        for i, query in enumerate_queries:
+            query_len = len(query)
+            query_count = Counter(query)
+            
+            for word, count in query_count.items():
+                if word in self.word_to_id:
+                    word_id = self.word_to_id[word]
+                    tf = count
+                    idf = self.idf.get(word, 0)
+                    
+                    # BM25 scoring formula
+                    numerator = idf * tf * (self.k1 + 1)
+                    denominator = tf + self.k1 * (1 - self.b + self.b * query_len / self.avgdl)
+                    
+                    score = numerator / denominator
+                    
+                    rows.append(i)
+                    cols.append(word_id)
+                    data.append(score)
+        
+        return csr_matrix((data, (rows, cols)), shape=(len(queries), len(self.vocabulary)))
+                    
+    def count_transform(self, queries: list[list[str]] | list[str], show_progress_bar: bool = False) -> csr_matrix:
+        
+        rows = []
+        cols = []
+        data = []
+        
+        if self.tokenizer is not None:
+            queries = self._tokenize_corpus(queries)
         enumerate_queries = tqdm.tqdm(enumerate(queries)) if show_progress_bar else enumerate(queries)
         
         for i, query in enumerate_queries:
@@ -97,7 +160,7 @@ class BM25Embedder(TextEmbedder):
     def __init__(
         self,
         #model_name_or_path: str,
-        batch_size: int = 10**4,
+        batch_size: int = 10**5,
         #device: str | None = None,
         max_seq_length: int | None = 10**6,
         model_kwargs: dict | None = None,
@@ -106,57 +169,8 @@ class BM25Embedder(TextEmbedder):
     ) -> None:
         self.model_kwargs = model_kwargs or {}
         
-        def tokenize(x, show_progress_bar: bool = False):
-            if show_progress_bar:
-                x = tqdm.tqdm(x, desc="Tokenizing")
-            return [tinysegmenter.tokenize(text) for text in x]
-        
-        # 並列処理を試みているがうまくいっていない
-        def _tokenize(x, show_progress_bar: bool = False, timeout: int = 3600):
-            
-            with concurrent.futures.ProcessPoolExecutor() as executor:
-                # futures のリストを作成
-                futures = []
-                for text in x:
-                    future = executor.submit(tinysegmenter.tokenize, text)
-                    futures.append(future)
-                
-                tokenized = []
-                try:
-                    # 完了したフューチャーを追跡
-                    completed = 0
-                    for future in tqdm.tqdm(
-                        concurrent.futures.as_completed(futures, timeout=timeout),
-                        total=len(futures),
-                        desc="Tokenizing"
-                    ):
-                        tokenized.append(future.result())
-                        completed += 1
-                        
-                except concurrent.futures.TimeoutError:
-                    remaining = len(futures) - completed
-                    logger.warning(f"Tokenization timed out after {timeout} seconds")
-                    logger.info(f"Completed: {completed}/{len(futures)} texts")
-                    logger.info(f"Remaining: {remaining} texts")
-                    
-                    # 未完了のタスクをキャンセル
-                    logger.info("Cancelling remaining tasks...")
-                    for future in futures:
-                        if not future.done():
-                            future.cancel()
-                    
-                    # プロセスプールを強制終了
-                    logger.info("Shutting down process pool...")
-                    executor.shutdown(wait=False)
-                    
-                    raise TimeoutError(f"Tokenization took longer than {timeout} seconds")
-                
-                finally:
-                    logger.info("Cleanup completed")
-            
-            logger.info(f"Tokenized {len(tokenized)} tokens")
-            return tokenized
-        self.tokenize = tokenize
+        self.tokenize = tokenize_with_ngrams
+        self.model = BM25Vectorizer(tokenizer=self.tokenize, **self.model_kwargs)
         
 
         self.batch_size = batch_size
@@ -169,8 +183,7 @@ class BM25Embedder(TextEmbedder):
         self.use_count_vector_for_query = use_count_vector_for_query
 
     def fit(self, corpus: list[str]):
-        tokenized_corpus = self.tokenize(corpus, show_progress_bar=True)
-        self.model = BM25Vectorizer(tokenized_corpus, **self.model_kwargs)
+        self.model.fit(corpus, initialize=True, batch_size=self.batch_size)
     
     def encode(
         self,
@@ -185,11 +198,10 @@ class BM25Embedder(TextEmbedder):
             text = [text]
         if prefix:
             text = [prefix + t for t in text]
-        tokenized_text = self.tokenize(text, show_progress_bar=show_progress_bar)
         if self.max_seq_length is not None:
-            tokenized_text = [t[:self.max_seq_length] for t in tokenized_text]
+            text = [t[:self.max_seq_length] for t in text]
         transform_func = self.model.count_transform if transform_to_count_vector else self.model.transform
-        embeddings = transform_func(tokenized_text, show_progress_bar=show_progress_bar)
+        embeddings = transform_func(text, show_progress_bar=show_progress_bar)
         if is_single_text:
             embeddings = embeddings[:1]  # csr_matrix の場合、単一行を取得
 
