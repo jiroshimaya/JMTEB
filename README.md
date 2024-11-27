@@ -9,17 +9,16 @@ poetry run python -m jmteb \
   --evaluators src/jmteb/configs/tasks/jagovfaqs_22k.jsonnet
 ```
 ## 結果
-| **Dataset**               | **Metric** | **Metric Value** | **Val Scores (Accuracy@1,3,5,10)**                          | **Test Scores (Accuracy@1,3,5,10)**                        | **Additional Metrics (Val: NDCG@10, MRR@10 / Test: NDCG@10, MRR@10)**                |
-|---------------------------|------------|------------------|--------------------------------------------------------------------|--------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|
-| jagovfaqs_22k             | NDCG@10    | 0.5319           | Val: 41.47, 55.28, 61.95, 67.59                                    | Test: 40.26, 55.35, 60.50, 66.64                                    | Val: 0.5416, 0.499 / Test: 0.5319, 0.489                                                      |
-| jaqket                    | NDCG@10    | 0.5981           | Val: 48.14, 61.81, 68.44, 74.57                                    | Test: 46.74, 62.29, 67.00, 73.32                                    | Val: 0.6090, 0.566 / Test: 0.5981, 0.555                                                      |
-| nlp_journal_abs_intro     | NDCG@10    | 0.9839           | Val: 100, 100, 100, 100                                            | Test: 96.78, 99.26, 99.50, 99.50                                    | Val: 1.0000, 1.000 / Test: 0.9839, 0.980                                                      |
-| nlp_journal_title_abs     | NDCG@10    | 0.9388           | Val: 93.00, 97.00, 99.00, 99.00                                    | Test: 89.11, 95.30, 96.29, 98.27                                    | Val: 0.9634, 0.955 / Test: 0.9388, 0.925                                                      |
-| nlp_journal_title_intro   | NDCG@10    | 0.9038           | Val: 92.00, 94.00, 94.00, 95.00                                    | Test: 83.17, 92.57, 95.30, 96.53                                    | Val: 0.9349, 0.930 / Test: 0.9038, 0.883                                                      |
 
-mrtydiについてはデータ件数が多く、現状実装を手元のPCで完了させることができなかったため、上記表に含まれていません。
+|Model|Avg.|jagovfaqs_22k(ndcg@10)|jaqket(ndcg@10)|mrtydi(ndcg@10)|nlp_journal_abs_intro(ndcg@10)|nlp_journal_title_abs(ndcg@10)|nlp_journal_title_intro(ndcg@10)|
+|---|---|---|---|---|---|---|---|---|---|---|
+|count-bm25|NA|0.5319|0.5981|NA|0.9839|0.9388|0.9038|
+
+- mrtydiについてはデータ件数が多く、現状実装を手元のPCで完了させることができなかったため、上記表に含まれていません。
 ## ToDo
+- mrtydiのスコア計算
 
+以下、本家リポジトリのREADMEです。
 # JMTEB: Japanese Massive Text Embedding Benchmark
 
 <h4 align="center">
