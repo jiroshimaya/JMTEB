@@ -43,7 +43,7 @@ class BM25Vectorizer:
         self.tokenizer = tokenizer
     
     def _tokenize_corpus(self, corpus: list[str]) -> list[list[str]]:
-        return [tokenize_with_ngrams(text) for text in corpus]
+        return [self.tokenizer(text) for text in corpus]
             
     def fit(self, corpus: list[list[str]] | list[str],
             initialize: bool = True,
@@ -165,11 +165,12 @@ class BM25Embedder(TextEmbedder):
         max_seq_length: int | None = 10**6,
         model_kwargs: dict | None = None,
         # tokenizer_kwargs: dict | None = None,
-        use_count_vector_for_query: bool = False
+        use_count_vector_for_query: bool = False,
+        tokenizer: Callable[[str], list[str]] = tokenize_with_ngrams
     ) -> None:
         self.model_kwargs = model_kwargs or {}
         
-        self.tokenize = tokenize_with_ngrams
+        self.tokenize = tokenizer
         self.model = BM25Vectorizer(tokenizer=self.tokenize, **self.model_kwargs)
         
 

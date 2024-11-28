@@ -12,13 +12,16 @@ poetry run python -m jmteb \
 
 |Model|Avg.|jagovfaqs_22k(ndcg@10)|jaqket(ndcg@10)|mrtydi(ndcg@10)|nlp_journal_abs_intro(ndcg@10)|nlp_journal_title_abs(ndcg@10)|nlp_journal_title_intro(ndcg@10)|
 |---|---|---|---|---|---|---|---|---|---|---|
-|count-bm25|NA|0.5319|0.5981|NA|0.9839|0.9388|0.9038|
+|count-bm25-dot-product|NA|0.5706|0.5976|NA|0.9915|0.9484|0.9485|
+|bm25-bm25-dot-product|NA|0.5875|0.5796|NA|0.9944|0.9506|0.9511|
 
+- model名は「クエリベクトルの種類-文書ベクトルの種類-類似度指標」の規則になっています。例えば「count-bm25-dot-product」はクエリのカウントベクトルと文書のBM25重みベクトルの内積、ということです。
+- tokenizeは高速化のため形態素解析は使わずトリグラムで実施しています。
 - mrtydiについてはデータ件数が多く、現状実装を手元のPCで完了させることができなかったため、上記表に含まれていません。
 ## ToDo
 - mrtydiのスコア計算
 
-以下、本家リポジトリのREADMEです。
+以降は本家リポジトリのREADMEです。
 # JMTEB: Japanese Massive Text Embedding Benchmark
 
 <h4 align="center">

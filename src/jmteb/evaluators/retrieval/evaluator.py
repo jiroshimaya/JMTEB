@@ -59,6 +59,7 @@ class RetrievalEvaluator(EmbeddingEvaluator):
         doc_prefix: str | None = None,
         log_predictions: bool = False,
         top_n_docs_to_log: int = 5,
+        optimal_dist_name: str | None = "dot_score",
     ) -> None:
         self.val_query_dataset = val_query_dataset
         self.test_query_dataset = test_query_dataset
@@ -75,6 +76,7 @@ class RetrievalEvaluator(EmbeddingEvaluator):
         self.doc_prefix = doc_prefix
         self.log_predictions = log_predictions
         self.top_n_docs_to_log = top_n_docs_to_log
+        self.optimal_dist_name = optimal_dist_name
     def __call__(
         self,
         model: TextEmbedder,
@@ -88,6 +90,7 @@ class RetrievalEvaluator(EmbeddingEvaluator):
         
         batch_encode_query_func = model.batch_encode_with_cache
         batch_encode_doc_func = model.batch_encode_with_cache
+        
         if model.__class__.__name__ in ("BM25Embedder", "TfidfEmbedder"):
             doc_text_list = [item.text for item in self.doc_dataset]
             model.fit(doc_text_list)
@@ -129,15 +132,18 @@ class RetrievalEvaluator(EmbeddingEvaluator):
             dist_functions.pop("euclidean_distance")
 
         val_results = {}
-        for dist_name, dist_func in dist_functions.items():
-            val_results[dist_name], _ = self._compute_metrics(
-                query_dataset=self.val_query_dataset,
-                query_embeddings=val_query_embeddings,
-                doc_embeddings=doc_embeddings,
-                dist_func=dist_func,
-            )
-        sorted_val_results = sorted(val_results.items(), key=lambda res: res[1][self.main_metric], reverse=True)
-        optimal_dist_name = sorted_val_results[0][0]
+        optimal_dist_name = self.optimal_dist_name
+        if optimal_dist_name is None:
+            for dist_name, dist_func in dist_functions.items():
+                val_results[dist_name], _ = self._compute_metrics(
+                    query_dataset=self.val_query_dataset,
+                    query_embeddings=val_query_embeddings,
+                    doc_embeddings=doc_embeddings,
+                    dist_func=dist_func,
+                )
+            sorted_val_results = sorted(val_results.items(), key=lambda res: res[1][self.main_metric], reverse=True)
+            optimal_dist_name = sorted_val_results[0][0]
+            
 
         test_scores, test_predictions = self._compute_metrics(
             query_dataset=self.test_query_dataset,
@@ -315,23 +321,6 @@ def to_tensor(embeddings: np.ndarray | Tensor, device: str) -> Tensor:
     if len(embeddings.shape) == 1:
         embeddings = embeddings.unsqueeze(0)
     return embeddings.to(device=device)
-
-def to_sparse_tensor(embeddings: csr_matrix | Tensor, device: str) -> Tensor:
-    if isinstance(embeddings, Tensor):
-        embeddings = embeddings.float()  # float32に変換
-        return embeddings.to_sparse().to(device=device)
-    elif isinstance(embeddings, csr_matrix):  # type: ignore
-        coo = embeddings.tocoo()
-        indices = np.vstack((coo.row, coo.col))
-        indices_tensor = torch.from_numpy(indices).long()
-        values_tensor = torch.from_numpy(coo.data).float()  # float32に変換
-        shape = coo.shape
-        sparse_tensor = torch.sparse_coo_tensor(
-            indices_tensor, values_tensor, torch.Size(shape), dtype=torch.float32
-        )
-        return sparse_tensor.to(device=device)
-    else:
-        raise TypeError("embeddings must be a csr_matrix or a Tensor")
     
 @dataclass
 class Similarities:
