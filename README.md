@@ -1,3 +1,27 @@
+# このフォークリポジトリについて
+JMTEBのRetrievalタスクをBM25で評価する機能を追加しました。
+本家同様に`poetry install`を実行後、以下のようにしてBM25による評価を実行できます。
+
+```bash
+poetry run python -m jmteb \
+  --embedder BM25Embedder \
+  --embedder.use_count_vector_for_query true \ # queryを単語カウントベクトルにするときはtrue、重みベクトルにするときはfalse
+  --evaluators src/jmteb/configs/tasks/jagovfaqs_22k.jsonnet
+```
+## 結果
+
+|Model|Avg.|jagovfaqs_22k(ndcg@10)|jaqket(ndcg@10)|mrtydi(ndcg@10)|nlp_journal_abs_intro(ndcg@10)|nlp_journal_title_abs(ndcg@10)|nlp_journal_title_intro(ndcg@10)|
+|---|---|---|---|---|---|---|---|---|---|---|
+|count-bm25-dot-product|NA|0.5706|0.5976|NA|0.9915|0.9484|0.9485|
+|bm25-bm25-dot-product|NA|0.5875|0.5796|NA|0.9944|0.9506|0.9511|
+
+- model名は「クエリベクトルの種類-文書ベクトルの種類-類似度指標」の規則になっています。例えば「count-bm25-dot-product」はクエリのカウントベクトルと文書のBM25重みベクトルの内積、ということです。
+- tokenizeは高速化のため形態素解析は使わずトリグラムで実施しています。
+- mrtydiについてはデータ件数が多く、現状実装を手元のPCで完了させることができなかったため、上記表に含まれていません。
+## ToDo
+- mrtydiのスコア計算
+
+以降は本家リポジトリのREADMEです。
 # JMTEB: Japanese Massive Text Embedding Benchmark
 
 <h4 align="center">
@@ -85,3 +109,4 @@ torchrun \
 ```
 
 Note that the batch size here is global batch size (`per_device_batch_size` × `n_gpu`).
+

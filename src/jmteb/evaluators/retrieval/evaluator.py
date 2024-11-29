@@ -11,6 +11,9 @@ import torch
 import tqdm
 from loguru import logger
 from torch import Tensor
+from scipy.sparse.csr import csr_matrix
+from sklearn.metrics.pairwise import cosine_similarity as cosine_similarity_sklearn
+
 from torch import distributed as dist
 
 from jmteb.embedders.base import TextEmbedder
@@ -49,13 +52,14 @@ class RetrievalEvaluator(EmbeddingEvaluator):
         val_query_dataset: RetrievalQueryDataset,
         test_query_dataset: RetrievalQueryDataset,
         doc_dataset: RetrievalDocDataset,
-        doc_chunk_size: int = 1000000,
+        doc_chunk_size: int = 10000,
         accuracy_at_k: list[int] | None = None,
         ndcg_at_k: list[int] | None = None,
         query_prefix: str | None = None,
         doc_prefix: str | None = None,
         log_predictions: bool = False,
         top_n_docs_to_log: int = 5,
+        optimal_dist_name: str | None = "dot_score",
     ) -> None:
         self.val_query_dataset = val_query_dataset
         self.test_query_dataset = test_query_dataset
@@ -72,18 +76,28 @@ class RetrievalEvaluator(EmbeddingEvaluator):
         self.doc_prefix = doc_prefix
         self.log_predictions = log_predictions
         self.top_n_docs_to_log = top_n_docs_to_log
-
+        self.optimal_dist_name = optimal_dist_name
     def __call__(
         self,
         model: TextEmbedder,
         cache_dir: str | PathLike[str] | None = None,
         overwrite_cache: bool = False,
     ) -> EvaluationResults:
-        model.set_output_tensor()
+        if not model.is_sparse_model:
+            model.set_output_tensor()
         if cache_dir is not None:
             Path(cache_dir).mkdir(parents=True, exist_ok=True)
-
-        val_query_embeddings = model.batch_encode_with_cache(
+        
+        batch_encode_query_func = model.batch_encode_with_cache
+        batch_encode_doc_func = model.batch_encode_with_cache
+        
+        if model.__class__.__name__ in ("BM25Embedder", "TfidfEmbedder"):
+            doc_text_list = [item.text for item in self.doc_dataset]
+            model.fit(doc_text_list)
+            batch_encode_query_func = model.batch_encode_query_with_cache
+            batch_encode_doc_func = model.batch_encode_doc_with_cache
+            
+        val_query_embeddings = batch_encode_query_func(
             text_list=[item.query for item in self.val_query_dataset],
             prefix=self.query_prefix,
             cache_path=Path(cache_dir) / "val_query.bin" if cache_dir is not None else None,
@@ -92,14 +106,14 @@ class RetrievalEvaluator(EmbeddingEvaluator):
         if self.val_query_dataset == self.test_query_dataset:
             test_query_embeddings = val_query_embeddings
         else:
-            test_query_embeddings = model.batch_encode_with_cache(
+            test_query_embeddings = batch_encode_query_func(
                 text_list=[item.query for item in self.test_query_dataset],
                 prefix=self.query_prefix,
                 cache_path=Path(cache_dir) / "test_query.bin" if cache_dir is not None else None,
                 overwrite_cache=overwrite_cache,
             )
 
-        doc_embeddings = model.batch_encode_with_cache(
+        doc_embeddings = batch_encode_doc_func(
             text_list=[item.text for item in self.doc_dataset],
             prefix=self.doc_prefix,
             cache_path=Path(cache_dir) / "corpus.bin" if cache_dir is not None else None,
@@ -113,17 +127,23 @@ class RetrievalEvaluator(EmbeddingEvaluator):
             "dot_score": Similarities.dot_score,
             "euclidean_distance": Similarities.euclidean_distance,
         }
+        if model.is_sparse_model:	
+            # remove euclidean_distance for sparse model	
+            dist_functions.pop("euclidean_distance")
 
         val_results = {}
-        for dist_name, dist_func in dist_functions.items():
-            val_results[dist_name], _ = self._compute_metrics(
-                query_dataset=self.val_query_dataset,
-                query_embeddings=val_query_embeddings,
-                doc_embeddings=doc_embeddings,
-                dist_func=dist_func,
-            )
-        sorted_val_results = sorted(val_results.items(), key=lambda res: res[1][self.main_metric], reverse=True)
-        optimal_dist_name = sorted_val_results[0][0]
+        optimal_dist_name = self.optimal_dist_name
+        if optimal_dist_name is None:
+            for dist_name, dist_func in dist_functions.items():
+                val_results[dist_name], _ = self._compute_metrics(
+                    query_dataset=self.val_query_dataset,
+                    query_embeddings=val_query_embeddings,
+                    doc_embeddings=doc_embeddings,
+                    dist_func=dist_func,
+                )
+            sorted_val_results = sorted(val_results.items(), key=lambda res: res[1][self.main_metric], reverse=True)
+            optimal_dist_name = sorted_val_results[0][0]
+            
 
         test_scores, test_predictions = self._compute_metrics(
             query_dataset=self.test_query_dataset,
@@ -147,16 +167,21 @@ class RetrievalEvaluator(EmbeddingEvaluator):
     def _compute_metrics(
         self,
         query_dataset: RetrievalQueryDataset,
-        query_embeddings: np.ndarray | Tensor,
-        doc_embeddings: np.ndarray | Tensor,
+        query_embeddings: np.ndarray | Tensor | csr_matrix,
+        doc_embeddings: np.ndarray | Tensor | csr_matrix,
         dist_func: Callable[[Tensor, Tensor], Tensor],
     ) -> tuple[dict[str, dict[str, float]], list[RetrievalPrediction]]:
         results: dict[str, float] = {}
         predictions: list[RetrievalPrediction] = [] if self.log_predictions else None
-        with tqdm.tqdm(total=len(doc_embeddings), desc="Retrieval doc chunks") as pbar:
+        is_csr_matrix = isinstance(doc_embeddings, csr_matrix) and isinstance(query_embeddings, csr_matrix) 
+        if is_csr_matrix:	
+            doc_len = doc_embeddings.shape[0]	
+        else:	
+            doc_len = len(doc_embeddings)
+        with tqdm.tqdm(total=doc_len, desc="Retrieval doc chunks") as pbar:
             top_k_indices_chunks: list[np.ndarray] = []
             top_k_scores_chunks: list[np.ndarray] = []
-            for offset in range(0, len(doc_embeddings), self.doc_chunk_size):
+            for offset in range(0, doc_len, self.doc_chunk_size):
                 doc_embeddings_chunk = doc_embeddings[offset : offset + self.doc_chunk_size]
 
                 if torch.cuda.is_available():
@@ -166,9 +191,12 @@ class RetrievalEvaluator(EmbeddingEvaluator):
                         device = "cuda"
                 else:
                     device = "cpu"
-
-                query_embeddings = to_tensor(query_embeddings, device=device)
-                doc_embeddings_chunk = to_tensor(doc_embeddings_chunk, device=device)
+                
+                if is_csr_matrix:
+                    pass
+                else:
+                    query_embeddings = to_tensor(query_embeddings, device=device)
+                    doc_embeddings_chunk = to_tensor(doc_embeddings_chunk, device=device)
                 similarity = dist_func(query_embeddings, doc_embeddings_chunk)
 
                 top_k = min(self.max_top_k, similarity.shape[1])  # in case the corpus is smaller than max_top_k
@@ -180,8 +208,11 @@ class RetrievalEvaluator(EmbeddingEvaluator):
 
                 top_k_indices_chunks.append(top_k_indices + offset)
                 top_k_scores_chunks.append(top_k_scores)
-
-                pbar.update(len(doc_embeddings_chunk))
+                if is_csr_matrix:
+                    doc_embeddings_chunk_len = doc_embeddings_chunk.shape[0]
+                else:
+                    doc_embeddings_chunk_len = len(doc_embeddings_chunk)
+                pbar.update(doc_embeddings_chunk_len)
 
         top_k_indices = torch.cat(top_k_indices_chunks, axis=1)
         top_k_scores = torch.cat(top_k_scores_chunks, axis=1)
@@ -282,32 +313,83 @@ def ndcg_at_k(relevant_docs: list[list[T]], top_hits: list[list[T]], k: int) -> 
 
 def to_tensor(embeddings: np.ndarray | Tensor, device: str) -> Tensor:
     if not isinstance(embeddings, Tensor):
-        embeddings = torch.tensor(embeddings)
+        embeddings = torch.tensor(
+            embeddings, dtype=torch.float32
+        )  # 明示的にfloat32を指定
+    else:
+        embeddings = embeddings.float()  # 既にTensorの場合、float32に変換
     if len(embeddings.shape) == 1:
         embeddings = embeddings.unsqueeze(0)
     return embeddings.to(device=device)
-
-
+    
 @dataclass
 class Similarities:
     @staticmethod
-    def cosine_similarity(e1: Tensor, e2: Tensor) -> Tensor:
+    def cosine_similarity(e1: Tensor | csr_matrix, e2: Tensor | csr_matrix) -> Tensor:
+        """
+        コサイン類似度を計算します。e2 がスパーステンソルの場合に対応しています。
+        """
+        if isinstance(e1, csr_matrix) and isinstance(e2, csr_matrix):
+            return torch.tensor(cosine_similarity_sklearn(e1, e2), dtype=torch.float32)
         e1_norm = torch.nn.functional.normalize(e1, p=2, dim=1)
-        e2_norm = torch.nn.functional.normalize(e2, p=2, dim=1)
-        return torch.mm(e1_norm, e2_norm.transpose(0, 1))
+
+        if e2.is_sparse:
+            # スパーステンソルをコアリッシュ
+            e2 = e2.coalesce()
+
+            # 各行のノルムを計算
+            row_norms = torch.sparse.sum(e2 * e2, dim=1).values().sqrt()
+            row_norms = row_norms + 1e-10  # ゼロ除算防止
+
+            # 値を正規化
+            normalized_values = e2.values() / row_norms[e2.indices()[0]]
+            e2_norm = torch.sparse_coo_tensor(
+                e2.indices(), normalized_values, e2.size(), device=e2.device
+            )
+
+            # スパース×密の行列積
+            similarity = torch.sparse.mm(e2_norm, e1_norm.transpose(0, 1))
+            return similarity.transpose(0, 1)
+        else:
+            e2_norm = torch.nn.functional.normalize(e2, p=2, dim=1)
+            return torch.mm(e1_norm, e2_norm.transpose(0, 1))
 
     @staticmethod
-    def manhatten_distance(e1: Tensor, e2: Tensor) -> Tensor:
-        # the more distant, the less similar, so we use 100 / dist as similarity
-        x = e1.unsqueeze(1)
-        y = e2.unsqueeze(0).repeat(e1.shape[0], 1, 1)
-        return 100 / ((x - y).abs().sum(dim=-1) + 1e-4)
+    def manhattan_distance(e1: Tensor, e2: Tensor) -> Tensor:
+        """
+        マンハッタン距離を計算します。e2 がスパーステンソルの場合、密テンソルに変換して計算します。
+        注意: スパーステンソルを密テンソルに変換するとメモリ消費が増加します。
+        """
+        if e2.is_sparse:
+            e2 = e2.coalesce().to_dense()
+        # マンハッタン距離の計算
+        x = e1.unsqueeze(1)  # (N, 1, D)
+        y = e2.unsqueeze(0)  # (1, M, D)
+        manhattan_dist = (x - y).abs().sum(dim=-1)  # (N, M)
+        return 100 / (manhattan_dist + 1e-4)
 
     @staticmethod
     def euclidean_distance(e1: Tensor, e2: Tensor) -> Tensor:
-        # the more distant, the less similar, so we use 100 / dist as similarity
-        return 100 / (torch.cdist(e1, e2) + 1e-4)
+        """
+        ユークリッド距離を計算します。e2 がスパーステンソルの場合、密テンソルに変換して計算します。
+        注意: スパーステンソルを密テンソルに変換するとメモリ消費が増加します。
+        """
+        if e2.is_sparse:
+            e2 = e2.coalesce().to_dense()
+        # ユークリッド距離の計算
+        euclidean_dist = torch.cdist(e1, e2)  # (N, M)
+        return 100 / (euclidean_dist + 1e-4)
 
     @staticmethod
-    def dot_score(e1: Tensor, e2: Tensor) -> Tensor:
-        return torch.mm(e1, e2.transpose(0, 1))
+    def dot_score(e1: Tensor | csr_matrix, e2: Tensor | csr_matrix) -> Tensor:
+        """
+        ドット積を計算します。e2 がスパーステンソルの場合に対応しています。
+        """
+        if isinstance(e1, csr_matrix) and isinstance(e2, csr_matrix):
+            return torch.tensor(e1.dot(e2.T).toarray())
+        if e2.is_sparse:
+            # スパーステンソルをコアリッシュ
+            e2 = e2.coalesce()
+            return torch.sparse.mm(e2, e1.transpose(0, 1)).transpose(0, 1)
+        else:
+            return torch.mm(e1, e2.transpose(0, 1))
