@@ -10,8 +10,8 @@ poetry run python -m jmteb \
 ```
 ## 結果
 
-|Model|Avg.|jagovfaqs_22k(ndcg@10)|jaqket(ndcg@10)|mrtydi(ndcg@10)|nlp_journal_abs_intro(ndcg@10)|nlp_journal_title_abs(ndcg@10)|nlp_journal_title_intro(ndcg@10)|
-|---|---|---|---|---|---|---|---|---|---|---|
+|Model|Avg.|jagovfaqs_22k<br>(ndcg@10)|jaqket<br>(ndcg@10)|mrtydi<br>(ndcg@10)|nlp_journal_abs_intro<br>(ndcg@10)|nlp_journal_title_abs<br>(ndcg@10)|nlp_journal_title_intro<br>(ndcg@10)|
+|---|---|---|---|---|---|---|---|
 |count-bm25-dot-product|NA|0.5706|0.5976|NA|0.9915|0.9484|0.9485|
 |bm25-bm25-dot-product|NA|0.5875|0.5796|NA|0.9944|0.9506|0.9511|
 
