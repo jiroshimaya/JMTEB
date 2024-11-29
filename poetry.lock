@@ -1004,7 +1004,6 @@ files = [
 [package.dependencies]
 jsonnet = {version = ">=0.13.0", optional = true, markers = "os_name == \"posix\" and python_version < \"3.13\" and extra == \"jsonnet\""}
 jsonnet-binary = {version = ">=0.17.0", optional = true, markers = "os_name != \"posix\" and python_version < \"3.13\" and extra == \"jsonnet\""}
-jsonnet-sdist = {version = "2024.6.23", optional = true, markers = "python_version == \"3.13\" and extra == \"jsonnet\""}
 PyYAML = ">=3.13"
 
 [package.extras]
@@ -1076,16 +1075,6 @@ files = [
     {file = "jsonnet_binary-0.17.0-pp37-pypy37_pp73-macosx_10_9_x86_64.whl", hash = "sha256:7a735e8bc0a23f2e6175262670b3fe993a90b3299fdaaffb1599c1146c5702ab"},
     {file = "jsonnet_binary-0.17.0-pp37-pypy37_pp73-manylinux2010_x86_64.whl", hash = "sha256:febd59e04ea4c2dc93f2c29dbfd03b49c092e6a275188f29639ea009f83696e6"},
     {file = "jsonnet_binary-0.17.0-pp37-pypy37_pp73-win32.whl", hash = "sha256:846735c55cf704acb071932dd2c4a22afc7cc77b0a90884080e97f58c7df75a0"},
-]
-
-[[package]]
-name = "jsonnet-sdist"
-version = "2024.6.23"
-description = "Python bindings for Jsonnet - The data templating language"
-optional = false
-python-versions = "*"
-files = [
-    {file = "jsonnet-sdist-2024.6.23.tar.gz", hash = "sha256:37c88078ab3f3cec8aa2969e88fd2de278d4801abaa52e0a573458ae205370d9"},
 ]
 
 [[package]]
@@ -3739,5 +3728,5 @@ propcache = ">=0.2.0"
 
 [metadata]
 lock-version = "2.0"
-python-versions = ">=3.10,<4.0"
-content-hash = "38f20542f1ff26b5532ea3a9df318542cb528fb1b275f131866b35641520840c"
+python-versions = ">=3.10,<3.13"
+content-hash = "97ba808722667a13910ed04711b996fcc9ec94b66d26b21cd553c752026ec8cb"
